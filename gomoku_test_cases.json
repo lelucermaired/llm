@@ -1,0 +1,37 @@
+[
+  {
+    "id": "rule_win",
+    "type": "rule",
+    "board": "",
+    "question": "五子棋的获胜条件是什么？请用一句话简要说明。",
+    "expected_answer_keywords": ["连续五个", "横竖斜", "连成五子", "五连"]
+  },
+  {
+    "id": "identify_win",
+    "type": "recognition",
+    "board": "当前棋盘（●黑子，○白子，·空位）：\n  A B C D E F G H\n1 · · · · · · · ·\n2 · · · · · · · ·\n3 · · ● ● ● ● · ·\n4 · · · · · · · ·\n5 · · · · · · · ·",
+    "question": "黑棋是否已经获胜？如果获胜，请指出连成五子的具体坐标（例如A1,B1,C1...）。如果没有，请回答'未获胜'。",
+    "expected_answer": "未获胜"
+  },
+  {
+    "id": "identify_four",
+    "type": "recognition",
+    "board": "当前棋盘：\n  A B C D E F G H\n1 · · · · · · · ·\n2 · · · · · · · ·\n3 · · ● ● ● · · ·\n4 · · · · · · · ·\n5 · · · · · · · ·",
+    "question": "请问黑棋目前有几个'活三'？有几个'冲四'？（只需回答数字，格式如：活三:X,冲四:Y）",
+    "expected_answer": "活三:1,冲四:0"
+  },
+  {
+    "id": "must_defend",
+    "type": "decision",
+    "board": "轮到黑棋（●）。棋盘状态：\n  A B C D E F G H\n1 · · · · · · · ·\n2 · · · · ○ · · ·\n3 · · ● ○ ○ ○ · ·\n4 · · · · · · · ·\n5 · · · · · · · ·",
+    "question": "白棋（○）已形成活三。黑棋必须防守的最优位置是哪里？请给出一个最重要的防守坐标，并简述理由。",
+    "expected_answer_keywords": ["E3", "F3", "阻挡", "防守"]
+  },
+  {
+    "id": "kill_move",
+    "type": "decision",
+    "board": "轮到黑棋（●）。棋盘状态：\n  A B C D E F G H\n1 · · · · · · · ·\n2 · · · · · · · ·\n3 · · ● ● ● · · ·\n4 · · · · · · · ·\n5 · · · · · · · ·",
+    "question": "黑棋是否有一步致胜的走法？如果有，请给出落子坐标。如果没有，请回答'无'。",
+    "expected_answer_keywords": ["G3", "C3", "形成活四"]
+  }
+]
