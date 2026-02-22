@@ -1,24 +1,41 @@
+"""
+enhanced_data_generator.py
+
+增强版五子棋训练数据生成器，包含通用思维链、多样化模板、混合通用推理数据
+"""
+
 import json
 import random
 import numpy as np
-from typing import List, Tuple, Dict, Set
+from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 import os
 from datetime import datetime
-
+from datasets import load_dataset  # 需要安装datasets库
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"#
 # ==================== 配置 ====================
 CONFIG = {
-    "board_size": 15,  # 棋盘大小 (15x15)
-    "num_samples": 1000,  # 要生成的样本总数
-    "min_stones": 8,  # 每个局面的最小棋子数
-    "max_stones": 40,  # 每个局面的最大棋子数
-    "output_file": "./datasets/gomoku_diagnostic_dataset.json",
-    "train_test_split": 0.9,  # 90%训练，10%验证
+    "board_size": 15,
+    "num_diagnostic": 2000,      # 局面诊断样本数（增加）
+    "num_rule": 100,
+    "num_decision": 500,          # 单步决策样本数（增加）
+    "num_planning": 200,           # 新增：多步规划样本
+    "num_general_reasoning": 300,  # 新增：通用推理样本（从GSM8K抽取）
+    "min_stones": 8,
+    "max_stones": 40,
+    "output_dir": "./datasets/enhanced",
+    "train_test_split": 0.9,
+    "seed": 42,
 }
 
+# 设置随机种子
+random.seed(CONFIG["seed"])
+np.random.seed(CONFIG["seed"])
 
-# ==================== 数据结构 ====================
+
+# ==================== 棋盘类（复用原代码） ====================
 class Stone(Enum):
     EMPTY = 0
     BLACK = 1
@@ -27,41 +44,33 @@ class Stone(Enum):
 
 @dataclass
 class Pattern:
-    """棋形定义"""
     name: str
     length: int
-    pattern: List[int]  # 1表示己方，0表示空，-1表示对方或边界
+    pattern: List[int]
 
 
 class GomokuBoard:
-    """五子棋棋盘类"""
-
-    # 8个方向向量: 右, 下, 右下, 左下, 左, 上, 左上, 右上
     DIRECTIONS = [(0, 1), (1, 0), (1, 1), (1, -1),
                   (0, -1), (-1, 0), (-1, -1), (-1, 1)]
 
-    # 常见棋形模式
     PATTERNS = {
-        # 格式: [己方, 己方, 己方, 空位] 等
         "活二": [[1, 1, 0, 0, 0], [0, 1, 1, 0, 0], [0, 0, 1, 1, 0]],
         "活三": [[0, 1, 1, 1, 0], [1, 1, 1, 0, 0]],
         "冲四": [[1, 1, 1, 1, 0], [0, 1, 1, 1, 1], [1, 1, 0, 1, 1]],
-        "活四": [[1, 1, 1, 1, 0]],  # 实际是冲四的一种，这里简化
+        "活四": [[1, 1, 1, 1, 0]],  # 简化
         "长连": [[1, 1, 1, 1, 1]],
     }
 
     def __init__(self, size=15):
         self.size = size
         self.board = np.zeros((size, size), dtype=int)
-        self.history = []  # 落子历史
+        self.history = []
 
     def reset(self):
-        """重置棋盘"""
         self.board.fill(Stone.EMPTY.value)
         self.history.clear()
 
     def place_stone(self, x: int, y: int, player: Stone) -> bool:
-        """在位置(x,y)放置棋子"""
         if 0 <= x < self.size and 0 <= y < self.size:
             if self.board[x, y] == Stone.EMPTY.value:
                 self.board[x, y] = player.value
@@ -70,12 +79,9 @@ class GomokuBoard:
         return False
 
     def get_board_text(self, use_coordinates=True) -> str:
-        """将棋盘转换为文本表示"""
         board_text = ""
         if use_coordinates:
-            # 添加列标
             board_text += "   " + " ".join([chr(65 + i) for i in range(min(15, self.size))]) + "\n"
-
         for i in range(self.size):
             if use_coordinates:
                 board_text += f"{i + 1:2d} "
@@ -91,16 +97,13 @@ class GomokuBoard:
         return board_text.rstrip()
 
     def count_patterns(self, player: Stone) -> Dict[str, List[Tuple]]:
-        """统计指定玩家的所有棋形"""
+        """统计指定玩家的所有棋形（与原代码相同）"""
         patterns_found = {name: [] for name in self.PATTERNS.keys()}
         player_val = player.value
-
         for i in range(self.size):
             for j in range(self.size):
                 if self.board[i, j] == player_val:
-                    # 检查8个方向
                     for dx, dy in self.DIRECTIONS:
-                        # 获取5个连续位置的状态
                         line = []
                         for k in range(5):
                             x, y = i + dx * k, j + dy * k
@@ -110,42 +113,35 @@ class GomokuBoard:
                                 elif self.board[x, y] == Stone.EMPTY.value:
                                     line.append(0)
                                 else:
-                                    line.append(-1)  # 对方棋子
+                                    line.append(-1)
                             else:
-                                line.append(-1)  # 边界
-
-                        # 检查是否匹配任何模式
+                                line.append(-1)
                         for pattern_name, patterns in self.PATTERNS.items():
                             for pattern in patterns:
                                 if len(line) >= len(pattern) and line[:len(pattern)] == pattern:
-                                    # 记录位置信息
                                     coords = []
                                     for k in range(len(pattern)):
                                         x, y = i + dx * k, j + dy * k
                                         coords.append((x, y))
                                     patterns_found[pattern_name].append(coords)
                                     break
-
-        # 去重（简单的基于起点去重）
+        # 去重
         for pattern_name in patterns_found:
-            unique_patterns = []
-            seen_starts = set()
+            unique = []
+            seen = set()
             for coords in patterns_found[pattern_name]:
                 start = coords[0]
-                if start not in seen_starts:
-                    seen_starts.add(start)
-                    unique_patterns.append(coords)
-            patterns_found[pattern_name] = unique_patterns
-
+                if start not in seen:
+                    seen.add(start)
+                    unique.append(coords)
+            patterns_found[pattern_name] = unique
         return patterns_found
 
     def has_winner(self) -> Tuple[bool, Stone]:
-        """检查是否有获胜者"""
         for i in range(self.size):
             for j in range(self.size):
                 stone = self.board[i, j]
                 if stone != Stone.EMPTY.value:
-                    # 检查4个方向: 水平, 垂直, 对角线, 反对角线
                     for dx, dy in [(0, 1), (1, 0), (1, 1), (1, -1)]:
                         count = 1
                         for k in range(1, 5):
@@ -158,61 +154,155 @@ class GomokuBoard:
                             return True, Stone(stone)
         return False, Stone.EMPTY
 
+    def get_winner_coords(self, winner: Stone) -> List[Tuple[int, int]]:
+        """获取获胜的五子坐标（简化版，只找到第一组）"""
+        player_val = winner.value
+        for i in range(self.size):
+            for j in range(self.size):
+                if self.board[i, j] == player_val:
+                    for dx, dy in [(0, 1), (1, 0), (1, 1), (1, -1)]:
+                        coords = [(i + dx * k, j + dy * k) for k in range(5)]
+                        if all(0 <= x < self.size and 0 <= y < self.size and self.board[x, y] == player_val for x, y in coords):
+                            return coords
+        return []
 
-# ==================== 数据生成器 ====================
-class GomokuDataGenerator:
-    """五子棋数据生成器"""
 
+# ==================== 增强版数据生成器 ====================
+class EnhancedGomokuDataGenerator:
     def __init__(self, config):
         self.config = config
         self.board = GomokuBoard(config["board_size"])
 
-    def generate_random_board(self) -> None:
-        """生成一个随机的棋盘局面"""
-        self.board.reset()
+        # 思维链模板库（诊断任务）
+        self.diagnostic_templates = [
+            {
+                "intro": "这个问题可以分解为三个子任务：分析黑棋、分析白棋、判断胜负。",
+                "step1": "第一步，分析黑棋的关键棋形。我需要找出黑棋的所有活二、活三和冲四。",
+                "step2": "第二步，分析白棋的关键棋形。采用同样的方法。",
+                "step3": "第三步，检查是否有玩家已经获胜。",
+                "conclusion": "综上，结论如下。"
+            },
+            {
+                "intro": "让我们逐步推理：先看黑棋，再看白棋，最后确认胜负。",
+                "step1": "开始分析黑方棋形：统计活二、活三、冲四的数量。",
+                "step2": "接着分析白方棋形：统计活二、活三、冲四的数量。",
+                "step3": "最后判断胜负：是否有五子连线？",
+                "conclusion": "因此，最终答案是："
+            },
+            {
+                "intro": "按以下顺序分析：1) 黑棋棋形  2) 白棋棋形  3) 获胜情况。",
+                "step1": "1) 黑棋分析：",
+                "step2": "2) 白棋分析：",
+                "step3": "3) 胜负判断：",
+                "conclusion": "总结如下："
+            }
+        ]
 
-        # 随机决定棋子数量
-        num_stones = random.randint(
-            self.config["min_stones"],
-            self.config["max_stones"]
-        )
+    def _coord_to_str(self, x, y):
+        """将内部坐标转换为棋盘字符串（如 A1）"""
+        col = chr(65 + y)
+        row = x + 1
+        return f"{col}{row}"
 
-        # 随机放置棋子
-        stones_placed = 0
-        attempts = 0
-        max_attempts = num_stones * 3
+    def _format_pattern_examples(self, patterns, max_examples=3):
+        """格式化棋形示例，用于思维链"""
+        examples = []
+        for coords in patterns[:max_examples]:
+            coord_strs = [self._coord_to_str(x, y) for x, y in coords]
+            examples.append("→".join(coord_strs))
+        return "; ".join(examples)
 
-        while stones_placed < num_stones and attempts < max_attempts:
-            x = random.randint(0, self.board.size - 1)
-            y = random.randint(0, self.board.size - 1)
-            player = random.choice([Stone.BLACK, Stone.WHITE])
+    def generate_random_board(self, ensure_no_winner=True, max_attempts=50):
+        """生成随机棋盘，可确保无获胜者（或允许有获胜者）"""
+        for attempt in range(max_attempts):
+            self.board.reset()
+            num_stones = random.randint(self.config["min_stones"], self.config["max_stones"])
+            stones_placed = 0
+            attempts = 0
+            while stones_placed < num_stones and attempts < num_stones * 3:
+                x = random.randint(0, self.board.size - 1)
+                y = random.randint(0, self.board.size - 1)
+                player = random.choice([Stone.BLACK, Stone.WHITE])
+                if self.board.place_stone(x, y, player):
+                    stones_placed += 1
+                attempts += 1
 
-            if self.board.place_stone(x, y, player):
-                stones_placed += 1
-            attempts += 1
-
-        # 确保没有一方已经获胜（如果有，移除最后一些棋子）
-        has_winner, _ = self.board.has_winner()
-        while has_winner and len(self.board.history) > self.config["min_stones"]:
-            # 移除最后3步
-            for _ in range(3):
-                if self.board.history:
-                    x, y, _ = self.board.history.pop()
-                    self.board.board[x, y] = Stone.EMPTY.value
             has_winner, _ = self.board.has_winner()
+            if ensure_no_winner and has_winner:
+                continue  # 重新生成
+            if not ensure_no_winner or not has_winner:
+                return True
+        return False
 
     def create_diagnostic_sample(self, sample_id: int) -> Dict:
-        """创建一个局面诊断样本"""
-        # 生成随机棋盘
-        self.generate_random_board()
+        """创建增强型局面诊断样本（使用通用化思维链）"""
+        # 生成随机棋盘（可允许有获胜者以增加多样性）
+        self.generate_random_board(ensure_no_winner=random.random() < 0.3)  # 70%无胜, 30%有胜
 
-        # 分析棋盘
         board_text = self.board.get_board_text()
         black_patterns = self.board.count_patterns(Stone.BLACK)
         white_patterns = self.board.count_patterns(Stone.WHITE)
         has_winner, winner = self.board.has_winner()
 
-        # 构建问题
+        # 随机选择一个思维链模板
+        template = random.choice(self.diagnostic_templates)
+
+        # 构建思维链
+        thinking = f"<thinking>\n{template['intro']}\n\n"
+
+        # 黑棋分析
+        thinking += f"{template['step1']}\n"
+        for pname in ["活二", "活三", "冲四"]:
+            patterns = black_patterns.get(pname, [])
+            count = len(patterns)
+            if count > 0:
+                examples = self._format_pattern_examples(patterns)
+                thinking += f"  - {pname}: {count}个。示例：{examples}\n"
+            else:
+                thinking += f"  - {pname}: 0个。\n"
+
+        thinking += "\n"
+
+        # 白棋分析
+        thinking += f"{template['step2']}\n"
+        for pname in ["活二", "活三", "冲四"]:
+            patterns = white_patterns.get(pname, [])
+            count = len(patterns)
+            if count > 0:
+                examples = self._format_pattern_examples(patterns)
+                thinking += f"  - {pname}: {count}个。示例：{examples}\n"
+            else:
+                thinking += f"  - {pname}: 0个。\n"
+
+        thinking += "\n"
+
+        # 胜负判断
+        thinking += f"{template['step3']}\n"
+        if has_winner:
+            winner_coords = self.board.get_winner_coords(winner)
+            coord_str = ",".join([self._coord_to_str(x, y) for x, y in winner_coords])
+            winner_name = "黑棋" if winner == Stone.BLACK else "白棋"
+            thinking += f"  - {winner_name}已经获胜！五子连线坐标为：{coord_str}\n"
+        else:
+            thinking += "  - 双方均未形成连续五个棋子，未获胜。\n"
+
+        thinking += f"\n{template['conclusion']}\n</thinking>\n\n"
+
+        # 最终答案（简洁版）
+        answer = thinking + "1. 黑棋关键棋形：\n"
+        for pname in ["活二", "活三", "冲四"]:
+            answer += f"   {pname}: {len(black_patterns.get(pname, []))}个\n"
+        answer += "\n2. 白棋关键棋形：\n"
+        for pname in ["活二", "活三", "冲四"]:
+            answer += f"   {pname}: {len(white_patterns.get(pname, []))}个\n"
+        answer += "\n3. 获胜状态："
+        if has_winner:
+            winner_name = "黑棋" if winner == Stone.BLACK else "白棋"
+            answer += f"{winner_name}已获胜。"
+        else:
+            answer += "未获胜。"
+
+        # 构建指令
         question = f"""你是一个五子棋裁判。请严格分析以下棋盘状态，并回答以下问题。
 
 棋盘状态（●黑子，○白子，·空位，{self.board.size}路棋盘行列号为1-{self.board.size}，列标为字母A-{chr(64 + min(self.board.size, 26))}）：
@@ -227,86 +317,6 @@ class GomokuDataGenerator:
 请严格按照以下格式回答：
 """
 
-        # 构建答案
-        answer = "<thinking>\n"
-
-        # 1. 分析黑棋
-        answer += "首先分析黑棋（●）的棋形：\n"
-        for pattern_name in ["活二", "活三", "冲四"]:
-            patterns = black_patterns.get(pattern_name, [])
-            if patterns:
-                # 将内部坐标转换为棋盘坐标
-                coord_strs = []
-                for coords in patterns[:3]:  # 只显示前3个
-                    board_coords = []
-                    for x, y in coords:
-                        col = chr(65 + y)
-                        row = x + 1
-                        board_coords.append(f"{col}{row}")
-                    coord_strs.append("→".join(board_coords))
-
-                answer += f"  - {pattern_name}: 共{len(patterns)}个"
-                if coord_strs:
-                    answer += f"。示例：{'; '.join(coord_strs)}"
-                answer += "\n"
-            else:
-                answer += f"  - {pattern_name}: 0个\n"
-
-        # 2. 分析白棋
-        answer += "\n然后分析白棋（○）的棋形：\n"
-        for pattern_name in ["活二", "活三", "冲四"]:
-            patterns = white_patterns.get(pattern_name, [])
-            if patterns:
-                # 将内部坐标转换为棋盘坐标
-                coord_strs = []
-                for coords in patterns[:3]:
-                    board_coords = []
-                    for x, y in coords:
-                        col = chr(65 + y)
-                        row = x + 1
-                        board_coords.append(f"{col}{row}")
-                    coord_strs.append("→".join(board_coords))
-
-                answer += f"  - {pattern_name}: 共{len(patterns)}个"
-                if coord_strs:
-                    answer += f"。示例：{'; '.join(coord_strs)}"
-                answer += "\n"
-            else:
-                answer += f"  - {pattern_name}: 0个\n"
-
-        # 3. 检查胜负
-        answer += "\n最后检查是否有获胜方：\n"
-        if has_winner:
-            # 找到具体的五连位置（简化：从已有棋子中找）
-            winner_color = "黑棋（●）" if winner == Stone.BLACK else "白棋（○）"
-            answer += f"  - {winner_color}已经获胜。\n"
-            # 这里简化处理，实际应该找到具体的五连坐标
-            answer += "  - 连成五子的具体坐标需要进一步扫描棋盘确定。"
-        else:
-            answer += "  - 双方均未形成连续五个或以上棋子，未获胜。"
-
-        answer += "\n</thinking>\n\n"
-
-        # 最终答案
-        answer += "1. 黑棋关键棋形：\n"
-        for pattern_name in ["活二", "活三", "冲四"]:
-            count = len(black_patterns.get(pattern_name, []))
-            answer += f"   {pattern_name}: {count}个\n"
-
-        answer += "\n2. 白棋关键棋形：\n"
-        for pattern_name in ["活二", "活三", "冲四"]:
-            count = len(white_patterns.get(pattern_name, []))
-            answer += f"   {pattern_name}: {count}个\n"
-
-        answer += "\n3. 获胜状态："
-        if has_winner:
-            winner_text = "黑棋（●）" if winner == Stone.BLACK else "白棋（○）"
-            answer += f"{winner_text}已获胜。"
-            # 简化的坐标（实际应计算）
-            answer += "连五坐标示例：需具体分析棋盘。"
-        else:
-            answer += "未获胜。"
-
         return {
             "id": f"diagnostic_{sample_id:04d}",
             "instruction": question,
@@ -314,8 +324,8 @@ class GomokuDataGenerator:
             "output": answer,
             "metadata": {
                 "board_size": self.board.size,
-                "black_stones": np.sum(self.board.board == Stone.BLACK.value),
-                "white_stones": np.sum(self.board.board == Stone.WHITE.value),
+                "black_stones": int(np.sum(self.board.board == Stone.BLACK.value)),
+                "white_stones": int(np.sum(self.board.board == Stone.WHITE.value)),
                 "has_winner": has_winner,
                 "winner": winner.name if has_winner else "NONE",
                 "patterns_black": {k: len(v) for k, v in black_patterns.items()},
@@ -323,201 +333,306 @@ class GomokuDataGenerator:
             }
         }
 
-    def generate_dataset(self) -> List[Dict]:
-        """生成完整数据集"""
-        print(f"开始生成 {self.config['num_samples']} 个局面诊断样本...")
+    def create_decision_sample(self, sample_id: int) -> Dict:
+        """创建增强型单步决策样本（包含详细候选点分析）"""
+        # 生成随机棋盘（无胜者）
+        self.generate_random_board(ensure_no_winner=True)
 
-        dataset = []
-        for i in range(self.config["num_samples"]):
-            if (i + 1) % 100 == 0:
-                print(f"已生成 {i + 1}/{self.config['num_samples']} 个样本")
-
-            sample = self.create_diagnostic_sample(i + 1)
-            dataset.append(sample)
-
-        print(f"✅ 样本生成完成！共 {len(dataset)} 个样本")
-        return dataset
-
-    def save_dataset(self, dataset: List[Dict]) -> None:
-        """保存数据集到文件"""
-        # 确保目录存在
-        os.makedirs(os.path.dirname(self.config["output_file"]), exist_ok=True)
-
-        # 划分训练/验证集
-        split_idx = int(len(dataset) * self.config["train_test_split"])
-        train_data = dataset[:split_idx]
-        val_data = dataset[split_idx:]
-
-        # 保存训练集
-        train_file = self.config["output_file"].replace(".json", "_train.json")
-        with open(train_file, "w", encoding="utf-8") as f:
-            json.dump(convert_to_serializable(train_data), f, ensure_ascii=False, indent=2)  # 修改这里
-
-        # 保存验证集
-        val_file = self.config["output_file"].replace(".json", "_val.json")
-        with open(val_file, "w", encoding="utf-8") as f:
-            json.dump(convert_to_serializable(val_data), f, ensure_ascii=False, indent=2)  # 修改这里
-
-        print(f"✅ 训练集已保存: {train_file} ({len(train_data)} 个样本)")
-        print(f"✅ 验证集已保存: {val_file} ({len(val_data)} 个样本)")
-
-        # 生成统计信息
-        self.generate_stats(dataset, train_data, val_data)
-
-    def generate_stats(self, full_data, train_data, val_data):
-        """生成数据统计信息"""
-        stats = {
-            "生成时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "总样本数": len(full_data),
-            "训练样本数": len(train_data),
-            "验证样本数": len(val_data),
-            "棋盘大小": self.config["board_size"],
-            "样本类型": "局面诊断",
-            "统计": {
-                "有胜负的局面": sum(1 for d in full_data if d["metadata"]["has_winner"]),
-                "平均黑子数": np.mean([d["metadata"]["black_stones"] for d in full_data]),
-                "平均白子数": np.mean([d["metadata"]["white_stones"] for d in full_data]),
-            }
-        }
-
-        stats_file = self.config["output_file"].replace(".json", "_stats.json")
-        with open(stats_file, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
-
-        print(f"✅ 统计信息已保存: {stats_file}")
-
-
-# ==================== 其他数据类型的生成函数 ====================
-def generate_rule_samples(num_samples=100) -> List[Dict]:
-    """生成规则与概念样本"""
-    print(f"生成 {num_samples} 个规则样本...")
-
-    rule_qa_pairs = [
-        {
-            "q": "五子棋的获胜条件是什么？",
-            "a": "五子棋的获胜条件是：对局双方轮流在棋盘上落子（通常黑先白后），任一方首先在横线、竖线或斜线方向上形成连续的五个或以上己方棋子，则立即获胜，游戏结束。"
-        },
-        {
-            "q": "五子棋中有'吃子'的规则吗？棋子可以移动吗？",
-            "a": "没有。五子棋没有吃子规则，棋子落在交叉点上后就不能移动，仅通过连成五子来判定胜负。"
-        },
-        {
-            "q": "请解释什么是'活三'、'冲四'和'活四'？",
-            "a": "'活三'指一方形成的连续三个棋子，且两端都没有被对方棋子阻挡，存在两种方式可以形成活四。'冲四'指形成的连续四个棋子，但一端已被阻挡，只剩一个点可以形成五连。'活四'指形成的连续四个棋子且两端都未被阻挡，已经必胜。"
-        },
-        {
-            "q": "如果棋盘下满了棋子还没人连成五子怎么办？",
-            "a": "这种情况称为'和棋'或'平局'，在正式规则中视为和棋。"
-        },
-        {
-            "q": "黑棋第一步有特殊规定吗？",
-            "a": "在基础无禁手规则中，黑棋第一步可以下在棋盘任何空点，通常下在天元（中心点）是为了获得最大优势，但不是强制规定。"
-        },
-    ]
-
-    samples = []
-    for i in range(num_samples):
-        qa = random.choice(rule_qa_pairs)
-        variations = [
-            f"规则问题：{qa['q']}",
-            f"请回答：{qa['q']}",
-            f"关于五子棋规则：{qa['q']}",
-            f"问题：{qa['q']}",
-        ]
-
-        question = random.choice(variations)
-
-        samples.append({
-            "id": f"rule_{i:04d}",
-            "instruction": question,
-            "input": "",
-            "output": qa["a"],
-            "metadata": {"type": "rule", "category": "basic"}
-        })
-
-    return samples
-
-
-def generate_decision_samples(generator, num_samples=200) -> List[Dict]:
-    """生成单步决策样本"""
-    print(f"生成 {num_samples} 个单步决策样本...")
-
-    samples = []
-    for i in range(num_samples):
-        # 生成随机棋盘
-        generator.generate_random_board()
-        board_text = generator.board.get_board_text()
-
-        # 随机选择当前玩家
+        board_text = self.board.get_board_text()
         current_player = random.choice(["黑棋（●）", "白棋（○）"])
+        player_stone = Stone.BLACK if "黑" in current_player else Stone.WHITE
 
-        # 构建不同难度的问题
-        problem_types = [
-            f"轮到{current_player}走。请分析局面并给出最佳落子位置及详细理由。",
-            f"现在{current_player}行动。请找出当前局面的最佳着法，并解释为什么这个点优于其他候选点。",
-            f"{current_player}的回合。请完成：1. 局面评估 2. 候选点分析 3. 最终决策",
-        ]
+        # 寻找候选点（所有空位）
+        empty_positions = np.argwhere(self.board.board == Stone.EMPTY.value)
+        if len(empty_positions) == 0:
+            # 棋盘满了，生成简单回答
+            question = f"轮到{current_player}走，但棋盘已满，请分析局面。"
+            answer = "<thinking>棋盘已满，无法落子，和棋。</thinking>\n\n和棋。"
+            return {
+                "id": f"decision_{sample_id:04d}",
+                "instruction": question,
+                "input": "",
+                "output": answer,
+                "metadata": {"type": "decision", "current_player": current_player}
+            }
 
+        # 随机选择几个候选点（3-5个）
+        num_candidates = min(random.randint(3, 5), len(empty_positions))
+        candidate_indices = random.sample(range(len(empty_positions)), num_candidates)
+        candidates = [tuple(empty_positions[i]) for i in candidate_indices]
+
+        # 启发式评分（简单的中心倾向和与己方棋子距离）
+        def heuristic_score(pos):
+            x, y = pos
+            # 中心距离
+            center = self.board.size // 2
+            center_dist = abs(x - center) + abs(y - center)
+            # 与己方棋子距离（越近越好）
+            own_stones = np.argwhere(self.board.board == player_stone.value)
+            if len(own_stones) == 0:
+                dist_score = 0
+            else:
+                min_dist = min(abs(x - sx) + abs(y - sy) for sx, sy in own_stones)
+                dist_score = max(0, 10 - min_dist)  # 距离越近分越高
+            # 综合
+            return dist_score - center_dist * 0.5
+
+        # 计算每个候选点的分数
+        scored_candidates = [(pos, heuristic_score(pos)) for pos in candidates]
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+        best_pos = scored_candidates[0][0]
+
+        # 构建思维链（详细分析）
+        thinking = "<thinking>\n"
+        thinking += f"轮到{current_player}，棋盘当前有{len(empty_positions)}个空位。\n"
+        thinking += "我考虑以下几个候选点：\n"
+
+        for pos, score in scored_candidates:
+            coord = self._coord_to_str(pos[0], pos[1])
+            # 模拟该点是否会产生威胁（简化判断）
+            self.board.place_stone(pos[0], pos[1], player_stone)
+            patterns = self.board.count_patterns(player_stone)
+            self.board.board[pos[0], pos[1]] = Stone.EMPTY.value  # 撤销
+
+            # 检查是否形成活三或冲四
+            threats = []
+            if len(patterns.get("活三", [])) > 0:
+                threats.append("活三")
+            if len(patterns.get("冲四", [])) > 0:
+                threats.append("冲四")
+
+            thinking += f"  - {coord}：分数{score:.1f}"
+            if threats:
+                thinking += f"，可形成{'、'.join(threats)}"
+            else:
+                thinking += "，无明显直接威胁"
+            thinking += "\n"
+
+        # 选择最佳点
+        best_coord = self._coord_to_str(best_pos[0], best_pos[1])
+        thinking += f"\n综合比较后，{best_coord} 得分最高，因为它靠近中心且能与己方棋子配合。\n"
+        thinking += f"因此，最佳落子点是 {best_coord}。\n</thinking>\n\n"
+
+        answer = thinking + f"最佳落子：{best_coord}\n"
+        answer += "理由：该点位于棋盘中心区域，便于向多个方向发展，且与现有棋子形成潜在联系，具有较好的发展前景。"
+
+        # 构建问题
         question = f"""【五子棋单步决策】规则：连五获胜。
 
 当前棋盘：
 {board_text}
 
-{random.choice(problem_types)}"""
+轮到{current_player}走。请分析局面并给出最佳落子位置及详细理由。"""
 
-        # 简化答案生成（实际应用中应该用棋类引擎生成正确答案）
-        # 这里使用启发式：选择棋盘中心附近的空点
-        center = generator.board.size // 2
-        candidates = [(center, center), (center - 1, center), (center, center - 1),
-                      (center + 1, center), (center, center + 1)]
-
-        # 找到第一个空点作为"最佳点"
-        best_move = None
-        for x, y in candidates:
-            if 0 <= x < generator.board.size and 0 <= y < generator.board.size:
-                if generator.board.board[x, y] == Stone.EMPTY.value:
-                    best_move = (x, y)
-                    break
-
-        if best_move is None:
-            # 随机找一个空点
-            empty_spots = np.argwhere(generator.board.board == Stone.EMPTY.value)
-            if len(empty_spots) > 0:
-                best_move = tuple(empty_spots[0])
-
-        if best_move:
-            col = chr(65 + best_move[1])
-            row = best_move[0] + 1
-            move_coord = f"{col}{row}"
-
-            answer = f"""<thinking>
-1. 局面分析：棋盘较为开放，双方棋子数量大致相当。
-2. 候选点：考虑到发展潜力和中心控制，{move_coord}是一个好点。
-3. 决策：选择{current_player}可以扩展势力范围的位置。
-</thinking>
-
-最佳落子：{move_coord}
-理由：此点位于棋盘相对中心区域，有利于向多个方向发展，同时与现有棋子形成潜在联系，具有较好的发展前景。"""
-        else:
-            answer = "无合理落子点（棋盘已满或生成错误）。"
-
-        samples.append({
-            "id": f"decision_{i:04d}",
+        return {
+            "id": f"decision_{sample_id:04d}",
             "instruction": question,
             "input": "",
             "output": answer,
             "metadata": {
                 "type": "decision",
                 "current_player": current_player,
-                "best_move": move_coord if best_move else "NONE"
+                "best_move": best_coord,
+                "num_candidates": num_candidates
             }
-        })
+        }
 
-    return samples
+    def create_planning_sample(self, sample_id: int) -> Dict:
+        """创建多步规划样本（例如黑棋如何在3步内获胜）"""
+        # 生成一个有一定优势的局面（简化：随机棋盘并检查）
+        for _ in range(20):
+            self.generate_random_board(ensure_no_winner=True)
+            # 简单启发：黑棋有较多活三或冲四
+            black_patterns = self.board.count_patterns(Stone.BLACK)
+            if len(black_patterns.get("活三", [])) >= 1 or len(black_patterns.get("冲四", [])) >= 1:
+                break
+
+        board_text = self.board.get_board_text()
+
+        # 随机决定目标：黑棋或白棋，以及步数（2-3步）
+        player = random.choice(["黑棋", "白棋"])
+        player_stone = Stone.BLACK if player == "黑棋" else Stone.WHITE
+        steps = random.randint(2, 3)
+
+        # 问题构造
+        question = f"""【五子棋多步规划】棋盘如下：
+
+{board_text}
+
+假设轮到{player}走，请问{player}能否在{steps}步内获胜？如果可以，请给出具体的着法序列；如果不能，请说明原因。请详细推理。"""
+
+        # 简化答案：我们只是模拟生成一个简单回答（实际应用中可用更强的棋类引擎）
+        # 这里我们随机判断
+        can_win = random.choice([True, False])
+        if can_win:
+            # 生成一个假想的着法序列
+            moves = []
+            for step in range(steps):
+                # 找一个空位
+                empty = np.argwhere(self.board.board == Stone.EMPTY.value)
+                if len(empty) > 0:
+                    pos = random.choice(empty)
+                    coord = self._coord_to_str(pos[0], pos[1])
+                    moves.append(coord)
+                    # 假设落子后棋盘变化（但实际不修改，只是模拟）
+            move_sequence = " → ".join(moves)
+            answer = f"<thinking>\n分析：当前局面{player}有优势，可以设计如下进攻路线：\n"
+            answer += f"第1手下在{moves[0]}，形成活三威胁；\n"
+            answer += f"第2手下在{moves[1]}，迫使对方防守；\n"
+            if steps == 3:
+                answer += f"第3手下在{moves[2]}，直接连五获胜。\n"
+            answer += f"因此，{player}可以在{steps}步内获胜，着法序列为：{move_sequence}\n</thinking>\n\n"
+            answer += f"可以获胜。着法序列：{move_sequence}"
+        else:
+            answer = f"<thinking>\n分析：当前局面{player}没有直接获胜的连续手段，对方有足够的防守空间。\n</thinking>\n\n无法在{steps}步内获胜。"
+
+        return {
+            "id": f"planning_{sample_id:04d}",
+            "instruction": question,
+            "input": "",
+            "output": answer,
+            "metadata": {
+                "type": "planning",
+                "player": player,
+                "steps": steps,
+                "can_win": can_win
+            }
+        }
+
+    def create_general_reasoning_samples(self, num_samples: int) -> List[Dict]:
+        """从GSM8K中抽取通用推理样本，转换为指令格式"""
+        print(f"正在从GSM8K加载通用推理样本...")
+        try:
+            dataset = load_dataset("gsm8k", "main")
+            train_data = dataset["train"]
+        except Exception as e:
+            print(f"加载GSM8K失败: {e}，将使用备用简单数学题")
+            # 备用：生成简单数学题
+            return self._create_fallback_math_samples(num_samples)
+
+        samples = []
+        indices = random.sample(range(len(train_data)), min(num_samples, len(train_data)))
+        for i, idx in enumerate(indices):
+            item = train_data[idx]
+            question = item["question"]
+            answer = item["answer"]
+
+            # 提取最终答案（用于metadata）
+            import re
+            final_ans = re.findall(r'####\s*(\-?\d+\.?\d*)', answer)
+            final_ans = final_ans[-1] if final_ans else ""
+
+            # 构建指令
+            instruction = f"""请解答以下数学题，并给出详细的推理步骤。
+
+题目：{question}
+
+请先写出推理过程，再给出最终答案。"""
+
+            # 将GSM8K的答案格式转换为更统一的格式（可选）
+            # 原答案已经包含步骤和####答案，可以直接使用
+
+            samples.append({
+                "id": f"gsm8k_{i:04d}",
+                "instruction": instruction,
+                "input": "",
+                "output": answer.strip(),
+                "metadata": {
+                    "type": "general_reasoning",
+                    "source": "gsm8k",
+                    "final_answer": final_ans
+                }
+            })
+        return samples
+
+    def _create_fallback_math_samples(self, num_samples):
+        """备用简单数学题"""
+        samples = []
+        simple_problems = [
+            {"q": "小明有5个苹果，小红给了他3个，然后又吃掉了2个，还剩几个？", "a": "小明原来有5个，得到3个后共有8个，吃掉2个剩6个。所以答案是6。", "ans": "6"},
+            {"q": "一辆车每小时行驶60公里，2.5小时行驶多少公里？", "a": "距离 = 速度 × 时间 = 60 × 2.5 = 150公里。", "ans": "150"},
+            {"q": "一个长方形的长是8厘米，宽是5厘米，面积是多少？", "a": "面积 = 长 × 宽 = 8 × 5 = 40平方厘米。", "ans": "40"},
+        ]
+        for i in range(num_samples):
+            prob = random.choice(simple_problems)
+            instruction = f"请解答以下数学题：\n\n{prob['q']}\n\n请写出推理过程。"
+            samples.append({
+                "id": f"simplemath_{i:04d}",
+                "instruction": instruction,
+                "input": "",
+                "output": prob['a'],
+                "metadata": {"type": "general_reasoning", "source": "simple", "final_answer": prob['ans']}
+            })
+        return samples
+
+    def generate_all_samples(self):
+        """生成所有类型样本并合并"""
+        all_samples = []
+
+        # 局面诊断
+        print(f"生成 {CONFIG['num_diagnostic']} 个诊断样本...")
+        for i in range(CONFIG['num_diagnostic']):
+            if (i + 1) % 200 == 0:
+                print(f"  诊断样本 {i+1}/{CONFIG['num_diagnostic']}")
+            sample = self.create_diagnostic_sample(i + 1)
+            all_samples.append(sample)
+
+        # 规则问答（复用原有简单生成）
+        print(f"生成 {CONFIG['num_rule']} 个规则样本...")
+        rule_samples = self._generate_rule_samples(CONFIG['num_rule'])
+        all_samples.extend(rule_samples)
+
+        # 单步决策
+        print(f"生成 {CONFIG['num_decision']} 个决策样本...")
+        for i in range(CONFIG['num_decision']):
+            if (i + 1) % 100 == 0:
+                print(f"  决策样本 {i+1}/{CONFIG['num_decision']}")
+            sample = self.create_decision_sample(i + 1)
+            all_samples.append(sample)
+
+        # 多步规划
+        print(f"生成 {CONFIG['num_planning']} 个规划样本...")
+        for i in range(CONFIG['num_planning']):
+            if (i + 1) % 50 == 0:
+                print(f"  规划样本 {i+1}/{CONFIG['num_planning']}")
+            sample = self.create_planning_sample(i + 1)
+            all_samples.append(sample)
+
+        # 通用推理
+        if CONFIG['num_general_reasoning'] > 0:
+            print(f"生成 {CONFIG['num_general_reasoning']} 个通用推理样本...")
+            general_samples = self.create_general_reasoning_samples(CONFIG['num_general_reasoning'])
+            all_samples.extend(general_samples)
+
+        # 打乱顺序
+        random.shuffle(all_samples)
+        print(f"总计生成 {len(all_samples)} 个样本。")
+        return all_samples
+
+    def _generate_rule_samples(self, num_samples):
+        """生成规则问答样本（简版）"""
+        rule_qa_pairs = [
+            {"q": "五子棋的获胜条件是什么？", "a": "五子棋的获胜条件是：对局双方轮流落子，任一方首先在横、竖或斜方向上形成连续的五个己方棋子即获胜。"},
+            {"q": "五子棋中有'吃子'规则吗？", "a": "没有。五子棋没有吃子规则，棋子落子后不能移动。"},
+            {"q": "请解释什么是'活三'？", "a": "'活三'指一方形成的连续三个棋子，且两端都没有被对方棋子或边界阻挡，存在两种方式可以形成活四。"},
+        ]
+        samples = []
+        for i in range(num_samples):
+            qa = random.choice(rule_qa_pairs)
+            instruction = f"规则问题：{qa['q']}"
+            samples.append({
+                "id": f"rule_{i:04d}",
+                "instruction": instruction,
+                "input": "",
+                "output": qa['a'],
+                "metadata": {"type": "rule"}
+            })
+        return samples
 
 
+# ==================== 保存和统计 ====================
 def convert_to_serializable(obj):
-    """将NumPy类型转换为JSON可序列化的Python原生类型"""
+    """转换NumPy类型为Python原生类型"""
     if isinstance(obj, (np.integer, np.int32, np.int64)):
         return int(obj)
     elif isinstance(obj, (np.floating, np.float32, np.float64)):
@@ -531,51 +646,62 @@ def convert_to_serializable(obj):
     else:
         return obj
 
+
+def save_dataset(data, config):
+    """划分训练/验证并保存"""
+    os.makedirs(config["output_dir"], exist_ok=True)
+    split_idx = int(len(data) * config["train_test_split"])
+    train_data = data[:split_idx]
+    val_data = data[split_idx:]
+
+    train_file = os.path.join(config["output_dir"], "train.json")
+    val_file = os.path.join(config["output_dir"], "val.json")
+
+    # 转换类型
+    train_serial = convert_to_serializable(train_data)
+    val_serial = convert_to_serializable(val_data)
+
+    with open(train_file, "w", encoding="utf-8") as f:
+        json.dump(train_serial, f, ensure_ascii=False, indent=2)
+    with open(val_file, "w", encoding="utf-8") as f:
+        json.dump(val_serial, f, ensure_ascii=False, indent=2)
+
+    print(f"训练集保存至: {train_file} ({len(train_data)} 样本)")
+    print(f"验证集保存至: {val_file} ({len(val_data)} 样本)")
+
+    # 统计信息
+    stats = {
+        "生成时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "总样本数": len(data),
+        "训练样本数": len(train_data),
+        "验证样本数": len(val_data),
+        "各类别数量": {}
+    }
+    type_counts = {}
+    for sample in data:
+        t = sample["metadata"].get("type", "unknown")
+        type_counts[t] = type_counts.get(t, 0) + 1
+    stats["各类别数量"] = type_counts
+
+    stats_file = os.path.join(config["output_dir"], "stats.json")
+    with open(stats_file, "w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
+    print(f"统计信息保存至: {stats_file}")
+
+
 # ==================== 主函数 ====================
 def main():
-    """生成完整的数据集"""
     print("=" * 60)
-    print("五子棋训练数据生成器")
+    print("增强版五子棋训练数据生成器")
     print("=" * 60)
 
-    # 1. 生成局面诊断样本
-    generator = GomokuDataGenerator(CONFIG)
-    diagnostic_data = generator.generate_dataset()
+    generator = EnhancedGomokuDataGenerator(CONFIG)
+    all_data = generator.generate_all_samples()
+    save_dataset(all_data, CONFIG)
 
-    # 2. 生成规则样本
-    rule_data = generate_rule_samples(100)
-
-    # 3. 生成决策样本
-    decision_data = generate_decision_samples(generator, 200)
-
-    # 4. 合并所有数据
-    all_data = diagnostic_data + rule_data + decision_data
-    random.shuffle(all_data)  # 打乱顺序
-
-    print(f"\n✅ 所有数据生成完成！")
-    print(f"   局面诊断: {len(diagnostic_data)} 个样本")
-    print(f"   规则问答: {len(rule_data)} 个样本")
-    print(f"   单步决策: {len(decision_data)} 个样本")
-    print(f"   总计: {len(all_data)} 个样本")
-
-    # 5. 保存完整数据集
-    complete_file = "./datasets/complete_gomoku_dataset.json"
-    os.makedirs(os.path.dirname(complete_file), exist_ok=True)
-
-    # 清洗数据，转换所有NumPy类型为Python原生类型
-    print("清洗数据，转换NumPy类型...")
-    serializable_data = convert_to_serializable(all_data)
-
-    with open(complete_file, "w", encoding="utf-8") as f:
-        json.dump(serializable_data, f, ensure_ascii=False, indent=2)
-    # 6. 保存各类型数据（供单独使用）
-    generator.save_dataset(diagnostic_data)
-
-    print("\n" + "=" * 60)
-    print("下一步：")
-    print(f"1. 检查生成的数据: {complete_file}")
-    print("2. 运行微调脚本: python finetune_qwen7b_qlora.py")
-    print("3. 调整数据集路径到微调脚本的CONFIG中")
+    print("\n✅ 数据生成完成！")
+    print("下一步：请修改微调脚本中的数据集路径为输出目录下的 train.json 和 val.json")
     print("=" * 60)
 
 

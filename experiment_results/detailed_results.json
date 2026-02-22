@@ -1,0 +1,38 @@
+{
+  "gsm8k": {
+    "base_accuracy": 0.0,
+    "chess_accuracy": 0.0,
+    "improvement": 0.0,
+    "relative_improvement": 0.0,
+    "p_value": NaN,
+    "statistically_significant": false,
+    "base_confidence_interval": [
+      NaN,
+      NaN
+    ],
+    "chess_confidence_interval": [
+      NaN,
+      NaN
+    ],
+    "sample_size": 50,
+    "detailed_comparisons": [],
+    "avg_chess_cot_score": 3.4,
+    "cot_score_distribution": {
+      "min": 2,
+      "max": 4
+    }
+  },
+  "transfer_analysis": {
+    "math_reasoning": {
+      "mean_improvement": 0.0,
+      "std_improvement": 0.0,
+      "max_improvement": 0.0,
+      "min_improvement": 0.0,
+      "num_benchmarks": 1
+    },
+    "overall": {
+      "mean_transfer_effect": 0.0,
+      "transfer_consistency": 0
+    }
+  }
+}
