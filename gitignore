@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+
+# 虚拟环境
+.venv/
+.venv311/
+venv/
+env/
+
+# 模型缓存(几十GB,在AutoDL上重新下载)
+cache/
+.cache/
+hf_cache/
+
+# 旧的checkpoint归档
+archive/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 大文件(如果用git-lfs或手动传)
+*.safetensors
+*.bin
+*.pt
+*.pth
+# 注意: 上面的忽略规则会排除checkpoint里的权重文件
+# 如果你准备用git传,需要git-lfs; 如果用scp/rsync直接传,这些规则只对git有效
+
+# 临时文件
+*.tmp
+*.log
+nohup.out
+
+# 本地配置
+.env
+config.local.json
