@@ -3,8 +3,8 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 
-base_name = 'Qwen/Qwen2.5-7B-Instruct'
-adapter = './checkpoints/qwen-gomoku-maxlora/final_model'
+base_name = '/root/autodl-tmp/models/qwen25-3b'
+adapter = './checkpoints/qwen3b-gomoku-maxlora/final_model'
 bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type='nf4', bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
 
 tasks = ['navigate', 'tracking_shuffled_objects_three_objects', 'logical_deduction_five_objects']
