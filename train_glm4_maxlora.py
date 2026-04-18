@@ -22,7 +22,7 @@ bnb = BitsAndBytesConfig(
 print("Loading model...")
 model = AutoModelForCausalLM.from_pretrained(
     base, quantization_config=bnb, device_map={'':0},
-    trust_remote_code=True, use_cache=False
+    trust_remote_code=True
 )
 tokenizer = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
 if tokenizer.pad_token is None:
