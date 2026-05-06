@@ -19,7 +19,7 @@ from peft import (
 
 os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0+PTX;8.6+PTX;8.9+PTX"
 
-BASE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+BASE_MODEL = "/root/autodl-tmp/models/Qwen2.5-7B-Instruct"
 DATA_PATH = "datasets/go_nocot_train.json"
 OUTPUT_DIR = "./checkpoints/qwen7b_go_nocot_maxlora"
 CACHE_DIR = "./cache"
