@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections import Counter, defaultdict
 
@@ -12,8 +13,10 @@ DATA_PATH = "datasets/tic_tac_toe_benchmark.json"
 
 MODELS = [
     ("BASE", None),
-    ("GOMOKU", "./checkpoints/qwen-gomoku-maxlora/final_model"),
+    ("GOMOKU_COT", "./checkpoints/qwen-gomoku-maxlora/final_model"),
+    ("GOMOKU_NOCOT", "./checkpoints/qwen7b-gomoku-nocot/final_model"),
     ("GO_COT", "./checkpoints/qwen7b-go-cot-maxlora-v2/final_model"),
+    ("GO_NOCOT", "./checkpoints/qwen7b_go_nocot_maxlora/final_model"),
 ]
 
 BNB_CONFIG = BitsAndBytesConfig(
@@ -122,6 +125,8 @@ def load_model(adapter_path):
         trust_remote_code=True,
     )
     if adapter_path:
+        if not os.path.isdir(adapter_path):
+            raise FileNotFoundError(f"Adapter path not found: {adapter_path}")
         model = PeftModel.from_pretrained(model, adapter_path)
     model.eval()
     return model
@@ -209,6 +214,8 @@ def main():
     print()
 
     tokenizer = AutoTokenizer.from_pretrained(BASE_PATH, trust_remote_code=True)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
     all_results = defaultdict(dict)
 
     for model_name, adapter_path in MODELS:
@@ -242,7 +249,7 @@ def main():
     print("SUMMARY: exact match by prompt variant")
     print("=" * 96)
     print(
-        "Model".ljust(12)
+        "Model".ljust(14)
         + "original".rjust(12)
         + "neutral".rjust(12)
         + "noexample".rjust(12)
@@ -250,7 +257,7 @@ def main():
         + "win(neu)".rjust(12)
         + "block(neu)".rjust(12)
     )
-    print("-" * 96)
+    print("-" * 98)
     for model_name, _ in MODELS:
         ro = all_results[model_name]["original"]
         rn = all_results[model_name]["neutral"]
@@ -258,7 +265,7 @@ def main():
         win_str = f"{rn['win_rate']*100:.1f}%" if rn["win_rate"] is not None else "N/A"
         block_str = f"{rn['block_rate']*100:.1f}%" if rn["block_rate"] is not None else "N/A"
         print(
-            model_name.ljust(12)
+            model_name.ljust(14)
             + f"{ro['exact']*100:.1f}%".rjust(12)
             + f"{rn['exact']*100:.1f}%".rjust(12)
             + f"{rx['exact']*100:.1f}%".rjust(12)
