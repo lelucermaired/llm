@@ -3,12 +3,15 @@ import os
 
 import matplotlib.pyplot as plt
 import torch
+from peft import PeftModel
+from transformers import AutoModelForCausalLM
 
 from mechanism_common import (
     DEFAULT_BASE_MODEL,
     DEFAULT_OUTPUT_DIR,
+    MODEL_SPECS,
     build_fewshot_messages,
-    load_model,
+    make_bnb_config,
     load_task,
     load_tokenizer,
 )
@@ -55,6 +58,21 @@ def reduce_heads(attn, mode):
     return attn.mean(dim=0)
 
 
+def load_model_with_eager_attention(model_name, base_model):
+    adapter_path = MODEL_SPECS[model_name]
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        quantization_config=make_bnb_config(),
+        device_map="auto",
+        trust_remote_code=True,
+        attn_implementation="eager",
+    )
+    if adapter_path:
+        model = PeftModel.from_pretrained(model, adapter_path)
+    model.eval()
+    return model
+
+
 def plot_layers(attn_mats, layers, title, output_path, contrast_low, contrast_high, dpi):
     fig_h = max(2.6 * len(layers), 3.2)
     fig, axes = plt.subplots(len(layers), 1, figsize=(9, fig_h), squeeze=False)
@@ -81,7 +99,7 @@ def main():
 
     layers = parse_layers(args.layers)
     tokenizer = load_tokenizer(args.base_model)
-    model = load_model(args.model, base_model=args.base_model)
+    model = load_model_with_eager_attention(args.model, args.base_model)
 
     fewshot = build_fewshot_messages(args.task, n_shot=args.n_shot)
     ds = load_task(args.task)
@@ -99,6 +117,12 @@ def main():
             output_attentions=True,
             use_cache=False,
             return_dict=True,
+        )
+
+    if not outputs.attentions:
+        raise RuntimeError(
+            "No attentions were returned. Make sure the model is loaded with "
+            "attn_implementation='eager' and that your Transformers version supports it."
         )
 
     n_layers = len(outputs.attentions)
